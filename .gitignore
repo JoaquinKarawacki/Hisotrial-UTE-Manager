@@ -1,0 +1,42 @@
+# Entorno virtual
+.venv/
+venv/
+env/
+
+# Base de datos
+*.db
+*.sqlite
+*.sqlite3
+
+# Caché de Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Directorios de salida
+historial*/
+facturas*/
+descargas*/
+PDFs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code (config local, no compartir)
+.claude/settings.local.json
+
+# Archivos de sistema
+.DS_Store
+Thumbs.db
+.env
+.env.local
+
+# Logs
+*.log
+debug_*.html

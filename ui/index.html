@@ -1,0 +1,611 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SEG Ingeniería — Historial Facturas UTE</title>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@300;400;500;600;700&family=Barlow+Condensed:wght@400;600;700&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --seg-red: #D42B2B;
+      --seg-red-dark: #A81F1F;
+      --seg-red-light: #F5E5E5;
+      --seg-gray: #7A7A7A;
+      --seg-gray-light: #F2F2F0;
+      --seg-gray-mid: #E0DFDB;
+      --seg-dark: #1A1A1A;
+      --font-main: 'Barlow', sans-serif;
+      --font-display: 'Barlow Condensed', sans-serif;
+    }
+    html, body { height: 100%; font-family: var(--font-main); background: var(--seg-gray-light); color: var(--seg-dark); }
+    .app { display: grid; grid-template-columns: 260px 1fr; height: 100vh; overflow: hidden; }
+
+    .sidebar { background: var(--seg-dark); display: flex; flex-direction: column; position: relative; overflow: hidden; }
+    .sidebar::after { content: ''; position: absolute; bottom: 0; left: 0; right: 0; height: 5px; background: var(--seg-red); }
+    .logo-area { padding: 20px 20px 18px; border-bottom: 1px solid rgba(255,255,255,0.08); display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+    .logo-img { width: 50px; height: 50px; border-radius: 2px; background: rgba(255,255,255,0.08); display: flex; align-items: center; justify-content: center; flex-shrink: 0; overflow: hidden; }
+    .logo-img img { width: 100%; height: 100%; object-fit: contain; padding: 6px; }
+    .logo-img.logo-fallback::before { content: 'SEG'; font-family: var(--font-display); font-size: 13px; font-weight: 700; color: var(--seg-red); letter-spacing: 0.5px; }
+    .logo-title { font-family: var(--font-display); font-size: 15px; font-weight: 600; color: white; letter-spacing: 0.5px; text-transform: uppercase; }
+    .logo-sub { font-size: 11px; font-weight: 300; color: var(--seg-gray); margin-top: 2px; }
+
+    .client-list { flex: 1; padding: 0; overflow-y: auto; display: flex; flex-direction: column; }
+    .client-item { padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.04); cursor: pointer; transition: background 0.15s; display: flex; align-items: center; gap: 10px; }
+    .client-item:hover { background: rgba(255,255,255,0.06); }
+    .client-item.active { background: var(--seg-red); }
+    .client-avatar { width: 32px; height: 32px; border-radius: 50%; background: rgba(255,255,255,0.15); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; color: white; flex-shrink: 0; }
+    .client-item.active .client-avatar { background: rgba(255,255,255,0.25); }
+    .client-info { min-width: 0; flex: 1; }
+    .client-name { font-size: 12px; font-weight: 600; color: rgba(255,255,255,0.9); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .client-item.active .client-name { color: white; }
+    .client-usuario { font-size: 10px; color: rgba(255,255,255,0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+    .client-item.active .client-usuario { color: rgba(255,255,255,0.7); }
+    .client-list-empty { padding: 20px; text-align: center; color: rgba(255,255,255,0.4); font-size: 12px; }
+
+    .main { display: flex; flex-direction: column; overflow: hidden; }
+    .topbar { background: white; border-bottom: 1px solid var(--seg-gray-mid); padding: 0 28px; height: 60px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+    .topbar-left { display: flex; align-items: center; gap: 10px; }
+    .topbar-tag { font-family: var(--font-display); font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: white; background: var(--seg-red); padding: 3px 9px; border-radius: 2px; }
+    .topbar-title { font-family: var(--font-display); font-size: 19px; font-weight: 600; color: var(--seg-dark); }
+    .topbar-right { display: flex; align-items: center; gap: 8px; }
+
+    .btn { font-family: var(--font-main); font-size: 12px; font-weight: 600; padding: 7px 14px; border-radius: 3px; cursor: pointer; border: none; display: inline-flex; align-items: center; gap: 5px; text-transform: uppercase; letter-spacing: 0.7px; transition: all 0.15s; }
+    .btn-primary { background: var(--seg-red); color: white; }
+    .btn-primary:hover:not(:disabled) { background: var(--seg-red-dark); }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-outline { background: white; color: var(--seg-gray); border: 1px solid var(--seg-gray-mid); }
+    .btn-outline:hover:not(:disabled) { border-color: var(--seg-gray); color: var(--seg-dark); }
+    .btn-outline:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-sm { font-size: 11px; padding: 5px 10px; }
+    .btn-danger { background: #FFCDD2; color: #C62828; }
+    .btn-danger:hover:not(:disabled) { background: #EF9A9A; }
+
+    .content { flex: 1; overflow-y: auto; padding: 24px 28px; }
+
+    .client-header { background: white; border: 1px solid var(--seg-gray-mid); border-top: 4px solid var(--seg-red); border-radius: 3px; padding: 20px; margin-bottom: 20px; display: flex; align-items: center; justify-content: space-between; }
+    .client-header-left { display: flex; align-items: center; gap: 16px; }
+    .client-avatar-lg { width: 48px; height: 48px; border-radius: 50%; background: var(--seg-red); display: flex; align-items: center; justify-content: center; font-size: 18px; font-weight: 700; color: white; flex-shrink: 0; }
+    .client-header-info h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; color: var(--seg-dark); margin-bottom: 4px; }
+    .client-header-info p { font-size: 12px; color: var(--seg-gray); }
+    .client-header-actions { display: flex; gap: 8px; }
+
+    .form-card { background: white; border: 1px solid var(--seg-gray-mid); border-top: 4px solid var(--seg-red); border-radius: 3px; padding: 24px; margin-bottom: 20px; }
+    .form-title { font-family: var(--font-display); font-size: 14px; font-weight: 700; color: var(--seg-dark); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.3px; }
+    .form-group { display: flex; flex-direction: column; }
+    .form-label { font-size: 10px; font-weight: 700; color: var(--seg-gray); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 6px; }
+    .form-input { padding: 9px 11px; border: 1px solid var(--seg-gray-mid); border-radius: 3px; font-family: var(--font-main); font-size: 14px; color: var(--seg-dark); background: white; outline: none; transition: border-color 0.15s; }
+    .form-input:focus { border-color: var(--seg-red); }
+    .form-input.multiline { min-height: 74px; resize: vertical; line-height: 1.35; }
+    .form-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+
+    .sub-toolbar { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
+    .sub-toolbar .form-group { min-width: 230px; flex: 1; max-width: 360px; }
+    .subcuentas-list { border: 1px solid var(--seg-gray-mid); border-radius: 3px; overflow: hidden; }
+    .sub-row { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--seg-gray-mid); background: white; }
+    .sub-row:last-child { border-bottom: none; }
+    .sub-number { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.4px; }
+    .sub-empty { padding: 14px; font-size: 12px; color: var(--seg-gray); background: var(--seg-gray-light); }
+    .sub-meta { margin-top: 8px; font-size: 12px; color: var(--seg-gray); }
+
+    .modal { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+    .modal.active { display: flex; }
+    .modal-content { background: white; border-radius: 3px; width: 420px; max-height: 90vh; overflow-y: auto; border-top: 4px solid var(--seg-red); box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+    .modal-header { padding: 20px; border-bottom: 1px solid var(--seg-gray-mid); display: flex; align-items: center; justify-content: space-between; }
+    .modal-title { font-family: var(--font-display); font-size: 16px; font-weight: 700; color: var(--seg-dark); text-transform: uppercase; letter-spacing: 0.3px; }
+    .modal-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--seg-gray); }
+    .modal-body { padding: 20px; }
+    .modal-footer { padding: 16px 20px; border-top: 1px solid var(--seg-gray-mid); display: flex; gap: 8px; justify-content: flex-end; }
+    .password-toggle { position: relative; }
+    .password-toggle-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 16px; color: var(--seg-gray); }
+
+    .logs-card { background: white; border: 1px solid var(--seg-gray-mid); border-radius: 3px; margin-bottom: 20px; display: flex; flex-direction: column; height: 320px; }
+    .logs-header { padding: 12px 16px; border-bottom: 1px solid var(--seg-gray-mid); background: var(--seg-gray-light); font-family: var(--font-display); font-size: 12px; font-weight: 700; color: var(--seg-dark); text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; gap: 8px; }
+    .logs-header::before { content: ''; width: 3px; height: 12px; background: var(--seg-red); border-radius: 1px; }
+    .logs-content { flex: 1; overflow-y: auto; padding: 12px 16px; background: #0D0D0D; color: #00FF00; font-family: 'Courier New', monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-wrap: break-word; }
+    .logs-content.empty { display: flex; align-items: center; justify-content: center; color: #444; }
+
+    .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 80px 20px; text-align: center; }
+    .empty-icon { width: 60px; height: 60px; background: var(--seg-gray-light); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 26px; margin-bottom: 14px; border: 2px dashed var(--seg-gray-mid); }
+    .empty-state h3 { font-family: var(--font-display); font-size: 18px; font-weight: 600; color: var(--seg-dark); }
+    .empty-state p { font-size: 13px; color: var(--seg-gray); margin-top: 8px; max-width: 400px; }
+
+    @media (max-width: 900px) {
+      .app { grid-template-columns: 210px 1fr; }
+      .content { padding: 14px; }
+      .client-header { flex-direction: column; align-items: flex-start; gap: 10px; }
+    }
+
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.12); border-radius: 2px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-img" id="logoImg">
+          <img src="../img/logo.png" alt="SEG" onerror="this.closest('#logoImg').classList.add('logo-fallback'); this.remove();" />
+        </div>
+        <div>
+          <div class="logo-title">Gestión UTE</div>
+          <div class="logo-sub">Facturas &amp; Cuentas</div>
+        </div>
+      </div>
+      <div class="client-list" id="clientList">
+        <div class="client-list-empty">Sin clientes</div>
+      </div>
+    </div>
+
+    <div class="main">
+      <div class="topbar">
+        <div class="topbar-left">
+          <span class="topbar-tag">UTE</span>
+          <span class="topbar-title">Historial de facturas</span>
+        </div>
+        <div class="topbar-right">
+          <button class="btn btn-primary" onclick="abrirModalNewClient()">+ Nuevo Cliente</button>
+        </div>
+      </div>
+
+      <div class="content" id="contentArea">
+        <div class="empty-state">
+          <div class="empty-icon">👥</div>
+          <h3>Sin cliente seleccionado</h3>
+          <p>Selecciona un cliente en el menú lateral o crea uno nuevo para comenzar.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal" id="modalCliente">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="modal-title" id="modalTitle">Nuevo Cliente</span>
+        <button class="modal-close" onclick="cerrarModal()">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label">Nombre del Cliente</label>
+          <input type="text" id="clientNombre" class="form-input" placeholder="Ej: CASMU" />
+        </div>
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label">Usuario UTE</label>
+          <input type="text" id="clientUsuario" class="form-input" placeholder="Usuario de UTE" />
+        </div>
+        <div class="form-group" style="margin-bottom: 16px;">
+          <label class="form-label" id="clientPasswordLabel">Contraseña UTE</label>
+          <div class="password-toggle">
+            <input type="password" id="clientPassword" class="form-input" placeholder="Contraseña" />
+            <button type="button" class="password-toggle-btn" onclick="togglePassword()">👁</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-outline" onclick="cerrarModal()">Cancelar</button>
+        <button class="btn btn-primary" id="btnModalSave" onclick="guardarCliente()">Guardar</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let state = {
+      clientes: [],
+      selectedClientId: null,
+      editingClientId: null,
+      descargaEnCurso: false,
+      selectedSubcuentas: {}
+    };
+
+    window.addEventListener('pywebviewready', function () {
+      cargarClientes();
+    });
+
+    async function cargarClientes() {
+      try {
+        const resultado = await window.pywebview.api.cargar_estado();
+        if (resultado && resultado.clientes) {
+          state.clientes = resultado.clientes;
+          renderSidebar();
+          if (state.selectedClientId !== null) {
+            renderClientContent();
+          }
+        }
+      } catch (e) {
+        console.error('Error cargando clientes:', e);
+      }
+    }
+
+    function renderSidebar() {
+      const clientList = document.getElementById('clientList');
+      if (state.clientes.length === 0) {
+        clientList.innerHTML = '<div class="client-list-empty">Sin clientes</div>';
+        mostrarEmptyState();
+        return;
+      }
+
+      clientList.innerHTML = state.clientes.map(cliente => {
+        const iniciales = (cliente.nombre || '?').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+        return `
+          <div class="client-item ${cliente.id === state.selectedClientId ? 'active' : ''}" onclick="selecionarCliente(${cliente.id})">
+            <div class="client-avatar">${iniciales}</div>
+            <div class="client-info">
+              <div class="client-name">${cliente.nombre}</div>
+              <div class="client-usuario">${cliente.usuario}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+
+      if (state.selectedClientId === null && state.clientes.length > 0) {
+        selecionarCliente(state.clientes[0].id);
+      }
+    }
+
+    function selecionarCliente(clienteId) {
+      state.selectedClientId = clienteId;
+      if (!state.selectedSubcuentas[clienteId]) {
+        state.selectedSubcuentas[clienteId] = [];
+      }
+      renderSidebar();
+      renderClientContent();
+    }
+
+    function getClienteActual() {
+      return state.clientes.find(c => c.id === state.selectedClientId);
+    }
+
+    function renderClientContent() {
+      const cliente = getClienteActual();
+      if (!cliente) {
+        mostrarEmptyState();
+        return;
+      }
+
+      const iniciales = (cliente.nombre || '?').split(' ').map(w => w[0]).join('').substring(0, 2).toUpperCase();
+      const subcuentas = cliente.subcuentas || [];
+      const selected = state.selectedSubcuentas[cliente.id] || [];
+
+      const subRows = subcuentas.length === 0
+        ? '<div class="sub-empty">No hay subcuentas cargadas para este cliente.</div>'
+        : subcuentas.map(sc => `
+            <div class="sub-row">
+              <input type="checkbox" ${selected.includes(sc.numero) ? 'checked' : ''} onchange="toggleSubcuenta('${escapeJs(sc.numero)}', this.checked)" />
+              <div class="sub-number">${escapeHtml(sc.numero)}</div>
+              <button class="btn btn-danger btn-sm" onclick="eliminarSubcuenta(${sc.id})">Eliminar</button>
+            </div>
+          `).join('');
+
+      const html = `
+        <div class="client-header">
+          <div class="client-header-left">
+            <div class="client-avatar-lg">${iniciales}</div>
+            <div class="client-header-info">
+              <h2>${escapeHtml(cliente.nombre)}</h2>
+              <p>${escapeHtml(cliente.usuario)}</p>
+            </div>
+          </div>
+          <div class="client-header-actions">
+            <button class="btn btn-outline btn-sm" onclick="abrirCarpetaCliente(${cliente.id})">Abrir carpeta</button>
+            <button class="btn btn-outline btn-sm" onclick="editarCliente(${cliente.id})">Editar</button>
+            <button class="btn btn-danger btn-sm" onclick="eliminarCliente(${cliente.id})">Eliminar</button>
+          </div>
+        </div>
+
+        <div class="form-card">
+          <div class="form-title">Subcuentas</div>
+          <div class="sub-toolbar">
+            <div class="form-group">
+              <label class="form-label">Nuevas subcuentas</label>
+              <textarea id="newSubcuenta" class="form-input multiline" placeholder="Ej: 0392341000, 0392341001 o una por linea"></textarea>
+            </div>
+            <button class="btn btn-primary" onclick="agregarSubcuenta()">+ Agregar varias</button>
+            <button class="btn btn-outline" onclick="seleccionarTodasSubcuentas()">Sel. Todas</button>
+            <button class="btn btn-outline" onclick="limpiarSeleccionSubcuentas()">Limpiar</button>
+          </div>
+          <div class="subcuentas-list">${subRows}</div>
+          <div class="sub-meta">Seleccionadas: <strong>${selected.length}</strong> de ${subcuentas.length}</div>
+        </div>
+
+        <div class="form-card">
+          <div class="form-title">Descargar Historial</div>
+          <p style="margin-bottom: 16px; font-size: 12px; color: var(--seg-gray);">
+            Si no seleccionas subcuentas, se descargan todas las del portal. Si seleccionas, solo esas.
+          </p>
+          <div class="form-actions">
+            <button id="btnDescargar" class="btn btn-primary" onclick="iniciarDescarga(${cliente.id})">Iniciar Descarga</button>
+          </div>
+        </div>
+
+        <div class="logs-card">
+          <div class="logs-header">Log de Descarga</div>
+          <div id="logsContent" class="logs-content empty">Inicia una descarga para ver el progreso aquí...</div>
+        </div>
+      `;
+
+      document.getElementById('contentArea').innerHTML = html;
+    }
+
+    function abrirModalNewClient() {
+      state.editingClientId = null;
+      document.getElementById('modalTitle').textContent = 'Nuevo Cliente';
+      document.getElementById('clientNombre').value = '';
+      document.getElementById('clientUsuario').value = '';
+      document.getElementById('clientPassword').value = '';
+      document.getElementById('clientPassword').type = 'password';
+      document.getElementById('clientPassword').placeholder = 'Contraseña';
+      document.getElementById('clientPasswordLabel').textContent = 'Contraseña UTE';
+      document.getElementById('modalCliente').classList.add('active');
+    }
+
+    function editarCliente(clienteId) {
+      const cliente = state.clientes.find(c => c.id === clienteId);
+      if (!cliente) return;
+
+      state.editingClientId = clienteId;
+      document.getElementById('modalTitle').textContent = 'Editar Cliente';
+      document.getElementById('clientNombre').value = cliente.nombre;
+      document.getElementById('clientUsuario').value = cliente.usuario;
+      document.getElementById('clientPassword').value = '';
+      document.getElementById('clientPassword').type = 'password';
+      document.getElementById('clientPassword').placeholder = 'Dejar en blanco para mantener la actual';
+      document.getElementById('clientPasswordLabel').textContent = 'Contraseña UTE (opcional)';
+      document.getElementById('modalCliente').classList.add('active');
+    }
+
+    function cerrarModal() {
+      document.getElementById('modalCliente').classList.remove('active');
+      state.editingClientId = null;
+    }
+
+    function togglePassword() {
+      const input = document.getElementById('clientPassword');
+      input.type = input.type === 'password' ? 'text' : 'password';
+    }
+
+    async function guardarCliente() {
+      const nombre = document.getElementById('clientNombre').value.trim();
+      const usuario = document.getElementById('clientUsuario').value.trim();
+      const password = document.getElementById('clientPassword').value.trim();
+
+      if (!nombre || !usuario || (!password && !state.editingClientId)) {
+        alert('Por favor completa todos los campos');
+        return;
+      }
+
+      const btnSave = document.getElementById('btnModalSave');
+      btnSave.disabled = true;
+
+      try {
+        let result;
+        if (state.editingClientId) {
+          result = await window.pywebview.api.actualizar_cliente(state.editingClientId, nombre, usuario, password);
+        } else {
+          result = await window.pywebview.api.crear_cliente(nombre, usuario, password);
+        }
+
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudo guardar el cliente');
+        }
+
+        cerrarModal();
+        await cargarClientes();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      } finally {
+        btnSave.disabled = false;
+      }
+    }
+
+    async function abrirCarpetaCliente(clienteId) {
+      try {
+        const result = await window.pywebview.api.abrir_carpeta_cliente(clienteId);
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudo abrir la carpeta');
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    async function eliminarCliente(clienteId) {
+      if (!confirm('¿Estás seguro de que deseas eliminar este cliente?')) {
+        return;
+      }
+
+      try {
+        const result = await window.pywebview.api.eliminar_cliente(clienteId);
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudo eliminar el cliente');
+        }
+        if (state.selectedClientId === clienteId) {
+          state.selectedClientId = null;
+        }
+        await cargarClientes();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    function parseSubcuentasInput(rawValue) {
+      const partes = String(rawValue || '')
+        .split(/[\s,;]+/)
+        .map(v => v.trim())
+        .filter(Boolean);
+      return Array.from(new Set(partes));
+    }
+
+    async function agregarSubcuenta() {
+      const cliente = getClienteActual();
+      if (!cliente) return;
+
+      const input = document.getElementById('newSubcuenta');
+      const numeros = parseSubcuentasInput(input.value);
+      if (numeros.length === 0) {
+        alert('Ingresa al menos una subcuenta');
+        return;
+      }
+
+      let creadas = 0;
+      let duplicadas = 0;
+      const errores = [];
+
+      try {
+        for (const numero of numeros) {
+          const result = await window.pywebview.api.crear_subcuenta(cliente.id, numero);
+          if (result && result.ok) {
+            creadas += 1;
+            continue;
+          }
+
+          const errMsg = ((result && result.error) || 'No se pudo crear la subcuenta');
+          if (/unique|duplicad/i.test(errMsg)) {
+            duplicadas += 1;
+          } else {
+            errores.push(numero + ': ' + errMsg);
+          }
+        }
+
+        input.value = '';
+
+        if (creadas > 0) {
+          await cargarClientes();
+        }
+
+        const resumen = [
+          'Creadas: ' + creadas,
+          'Duplicadas: ' + duplicadas,
+          'Con error: ' + errores.length
+        ];
+        alert(resumen.join(' | ') + (errores.length ? '\n\n' + errores.slice(0, 8).join('\n') : ''));
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    async function eliminarSubcuenta(subcuentaId) {
+      if (!confirm('¿Eliminar esta subcuenta?')) {
+        return;
+      }
+
+      try {
+        const result = await window.pywebview.api.eliminar_subcuenta(subcuentaId);
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudo eliminar la subcuenta');
+        }
+        await cargarClientes();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    function toggleSubcuenta(numero, checked) {
+      const cliente = getClienteActual();
+      if (!cliente) return;
+
+      const current = state.selectedSubcuentas[cliente.id] || [];
+      if (checked) {
+        if (!current.includes(numero)) {
+          current.push(numero);
+        }
+      } else {
+        const idx = current.indexOf(numero);
+        if (idx >= 0) {
+          current.splice(idx, 1);
+        }
+      }
+      state.selectedSubcuentas[cliente.id] = current;
+      renderClientContent();
+    }
+
+    function seleccionarTodasSubcuentas() {
+      const cliente = getClienteActual();
+      if (!cliente) return;
+      state.selectedSubcuentas[cliente.id] = (cliente.subcuentas || []).map(s => s.numero);
+      renderClientContent();
+    }
+
+    function limpiarSeleccionSubcuentas() {
+      const cliente = getClienteActual();
+      if (!cliente) return;
+      state.selectedSubcuentas[cliente.id] = [];
+      renderClientContent();
+    }
+
+    async function iniciarDescarga(clienteId) {
+      if (state.descargaEnCurso) {
+        alert('Ya hay una descarga en progreso');
+        return;
+      }
+
+      const btnDescargar = document.getElementById('btnDescargar');
+      const logsDiv = document.getElementById('logsContent');
+      const seleccion = (state.selectedSubcuentas[clienteId] || []).slice();
+
+      state.descargaEnCurso = true;
+      btnDescargar.disabled = true;
+      btnDescargar.textContent = 'Descargando...';
+      logsDiv.textContent = '';
+      logsDiv.classList.remove('empty');
+
+      try {
+        const result = await window.pywebview.api.iniciar_descarga(clienteId, seleccion);
+        if (!result || !result.ok) {
+          logsDiv.textContent += 'Error: ' + ((result && result.error) || 'Desconocido') + '\n';
+        }
+      } catch (e) {
+        logsDiv.textContent += 'Error: ' + e.message + '\n';
+      }
+    }
+
+    window.recibirLog = function (mensaje) {
+      const logsDiv = document.getElementById('logsContent');
+      if (!logsDiv) {
+        return;
+      }
+      logsDiv.classList.remove('empty');
+      logsDiv.textContent += mensaje + '\n';
+      logsDiv.scrollTop = logsDiv.scrollHeight;
+
+      if (mensaje.includes('__DESCARGA_FINALIZADA__')) {
+        state.descargaEnCurso = false;
+        const btnDescargar = document.getElementById('btnDescargar');
+        if (btnDescargar) {
+          btnDescargar.disabled = false;
+          btnDescargar.textContent = 'Iniciar Descarga';
+        }
+      }
+    };
+
+    function mostrarEmptyState() {
+      document.getElementById('contentArea').innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">👥</div>
+          <h3>Sin cliente seleccionado</h3>
+          <p>Selecciona un cliente en el menú lateral o crea uno nuevo para comenzar.</p>
+        </div>
+      `;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function escapeJs(value) {
+      return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    }
+
+    window.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        cerrarModal();
+      }
+    });
+  </script>
+</body>
+</html>

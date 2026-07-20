@@ -21,6 +21,9 @@ facturas*/
 descargas*/
 PDFs/
 
+# Facturas reales (muestras de prueba u otras) — contienen datos de clientes
+*.pdf
+
 # IDE
 .vscode/
 .idea/

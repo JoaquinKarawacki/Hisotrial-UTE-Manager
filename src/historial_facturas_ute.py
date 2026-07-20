@@ -43,8 +43,13 @@ def contar_paginas_pdf(path: str) -> int:
             return len(pdf.pages)
     except Exception:
         return 0
- 
- 
+
+
+def detectar_tipo_factura(pdf_path: str) -> str:
+    """'GS' si la factura tiene una sola hoja, 'TH' si tiene dos o mas."""
+    return "GS" if contar_paginas_pdf(pdf_path) == 1 else "TH"
+
+
 def _norm_spaces(s: str) -> str:
     return " ".join((s or "").split())
  
@@ -643,16 +648,182 @@ def extract_lecturas_pivotadas(pdf_path: str) -> dict:
         result[f"{col_base}_tipo_lec"] = r["tipo_lec"]
  
     return result
- 
- 
+
+
+# =========================
+# Parsing PDF — factura GS (una hoja)
+# =========================
+# Layout distinto al de TH: una sola pagina, sin etiquetas "Tarifa Aplicada" /
+# "Direccion del Servicio" / "Tipo de Zona Electrica", tarifa por escalones en vez
+# de Punta/Valle/Llano, y un solo valor de Potencia Contratada (no punta-llano/valle).
+# Se mantiene separado de extract_cuadro_superior/extract_lecturas_pivotadas (TH)
+# para no arriesgar regresiones en el flujo ya probado en produccion.
+def extract_cliente_ubicacion_gs(all_text: str) -> dict:
+    lineas = [_norm_spaces(l) for l in all_text.splitlines() if _norm_spaces(l)]
+    nombre_cliente = lineas[0] if lineas else ""
+
+    localidad_cliente = ""
+    departamento_cliente = ""
+    m_loc = re.search(r"\n([A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]{3,})\s*-\s*CP\s*[\d-]+", all_text)
+    if m_loc:
+        localidad_cliente = _norm_spaces(m_loc.group(1))
+
+    # Direccion del suministro: segundo bloque nombre+direccion, ubicado despues
+    # del R.U.T. (formato: <direccion>\n<10 digitos>\n<localidad>). Se prioriza
+    # sobre la direccion de facturacion porque el caso de uso central de la app
+    # es un cliente con N subcuentas en direcciones fisicas distintas.
+    direccion_cliente = ""
+    m_dir = re.search(
+        r"R\.U\.T\.:\s*\d+[\s\S]*?\n([A-Z0-9][^\n]+?)\n\d{10}\n([A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]{3,})\n",
+        all_text
+    )
+    if m_dir:
+        direccion_cliente = _norm_spaces(m_dir.group(1))
+        localidad_cliente = _norm_spaces(m_dir.group(2))
+
+    if not departamento_cliente and localidad_cliente.upper() == "MONTEVIDEO":
+        departamento_cliente = "MONTEVIDEO"
+
+    return {
+        "nombre_cliente": nombre_cliente,
+        "direccion_cliente": direccion_cliente,
+        "localidad_cliente": localidad_cliente,
+        "departamento_cliente": departamento_cliente,
+    }
+
+
+def extract_cuadro_superior_gs(pdf_path: str, archivo: str) -> dict:
+    all_text = _read_pdf_text(pdf_path)
+    cliente_ubicacion = extract_cliente_ubicacion_gs(all_text)
+
+    nro_cuenta = _find_first(r"\b(\d{10})\b", all_text)
+    nro_medidor = _find_first(r"MEDIDOR\s+Nro\.?\s*(\d+)", all_text)
+
+    nro_factura = fecha_emision = prox_venc = ""
+    ml = re.search(r"\b([A-Z])\s*(\d{6,10})\s+" + DATE_PAT + r"\s+" + DATE_PAT + r"\b", all_text)
+    if ml:
+        nro_factura = f"{ml.group(1)} {ml.group(2)}"
+        fecha_emision = ml.group(3)
+        prox_venc = ml.group(4)
+
+    # Periodo de Consumo y Tarifa aparecen pegados en la misma linea, sin
+    # etiqueta "Tarifa Aplicada" (ej: "22/05/2026 a 22/06/2026 General Simple.").
+    periodo = ""
+    tarifa = ""
+    m_per_tar = re.search(
+        DATE_PAT + r"\s*a\s*" + DATE_PAT + r"\s+([^\n]+?)\.\s*\n",
+        all_text
+    )
+    if m_per_tar:
+        periodo = f"{m_per_tar.group(1)} a {m_per_tar.group(2)}"
+        tarifa = _norm_spaces(m_per_tar.group(3))
+
+    # Potencia Contratada: un solo valor (GS no distingue punta-llano/valle).
+    potencia_contratada_kw = ""
+    m_pot = re.search(r"CARGO\s+POTENCIA\s+CONTRATADA\s*\n[^\n\d]*([\d\.,]+)\s*kW", all_text, re.I)
+    if m_pot:
+        potencia_contratada_kw = _norm_money(m_pot.group(1))
+
+    # Tipo de Zona Electrica: dos fragmentos no adyacentes ("ADT n - Tipo" y,
+    # unas lineas mas abajo, "densidad NIVEL").
+    zona = ""
+    m_zona = re.search(r"(ADT\s*\d+\s*-\s*\w+)[\s\S]{0,60}?\n\s*(densidad\s+\w+)", all_text, re.I)
+    if m_zona:
+        zona = _norm_spaces(f"{m_zona.group(1)} {m_zona.group(2)}")
+
+    # Total antes de impuestos (equivalente al TOTAL de "DETALLE DE FACTURACION" en TH).
+    total_detalle_facturacion = ""
+    m_tot = re.search(r"Importe\s+Gravado\s+\d+%\s*([\d\.,]+)", all_text, re.I)
+    if m_tot:
+        total_detalle_facturacion = _norm_money(m_tot.group(1))
+
+    return {
+        "archivo":                            archivo,
+        "nro_cuenta":                         nro_cuenta,
+        "nro_factura":                        nro_factura,
+        "fecha_emision":                      fecha_emision,
+        "prox_vencimiento":                   prox_venc,
+        "acuerdo_servicio":                   "",
+        "nro_medidor":                        nro_medidor,
+        "tarifa_aplicada":                    tarifa,
+        "potencia_contratada_kw":             potencia_contratada_kw,
+        "potencia_contratada_punta_llano_kw": "",
+        "potencia_contratada_valle_kw":       "",
+        "consumo_activo_kwh":                 "",
+        "consumo_reactivo_kvarh":             "",
+        "tension":                            "",
+        "fases":                              "",
+        "direccion_servicio":                 cliente_ubicacion["direccion_cliente"],
+        "periodo_consumo":                    periodo,
+        "zona_electrica":                     zona,
+        "total_detalle_facturacion":          total_detalle_facturacion,
+        "nombre_cliente":                     cliente_ubicacion["nombre_cliente"],
+        "direccion_cliente":                  cliente_ubicacion["direccion_cliente"],
+        "localidad_cliente":                  cliente_ubicacion["localidad_cliente"],
+        "departamento_cliente":               cliente_ubicacion["departamento_cliente"],
+    }
+
+
+def extract_lecturas_pivotadas_gs(pdf_path: str) -> dict:
+    all_text = _read_pdf_text(pdf_path)
+
+    TIPO_PAT_GS = r"Activa\s+Saliente|Activa|Reactiva"
+    row_pat = re.compile(
+        rf"(?P<tipo>{TIPO_PAT_GS})\s+"
+        rf"(?P<ant>{NUM_UY})\s+"
+        rf"(?P<act>{NUM_UY})\s+"
+        rf"(?P<total>{NUM_UY})\s+"
+        rf"(?P<tlec>[A-Za-z]+)\b",
+        re.I | re.M
+    )
+
+    rows = []
+    seen = set()
+    for m in row_pat.finditer(all_text):
+        tipo = _norm_spaces(m.group("tipo"))
+        key = (tipo.lower(), m.group("ant"), m.group("act"))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "tipo":     tipo,
+            "lect_ant": _norm_money(m.group("ant")),
+            "lect_act": _norm_money(m.group("act")),
+            "factor":   "1",
+            "total":    _norm_money(m.group("total")),
+            "tipo_lec": _norm_spaces(m.group("tlec")),
+        })
+
+    result = {}
+    for r in rows:
+        col_base = re.sub(r"\s+", "_", r["tipo"].lower())
+        col_base = re.sub(r"[^a-z0-9_]", "", col_base)
+        result[f"{col_base}_lect_ant"] = r["lect_ant"]
+        result[f"{col_base}_lect_act"] = r["lect_act"]
+        result[f"{col_base}_factor"]   = r["factor"]
+        result[f"{col_base}_total"]    = r["total"]
+        result[f"{col_base}_tipo_lec"] = r["tipo_lec"]
+
+    return result
+
+
 # =========================
 # Parse completo
 # =========================
 def parse_factura_historial(pdf_path: str) -> dict:
-    archivo  = os.path.basename(pdf_path)
-    cuadro   = extract_cuadro_superior(pdf_path, archivo)
-    lecturas = extract_lecturas_pivotadas(pdf_path)
-    return {**cuadro, **lecturas}
+    archivo = os.path.basename(pdf_path)
+    tipo_factura = detectar_tipo_factura(pdf_path)
+
+    if tipo_factura == "GS":
+        cuadro = extract_cuadro_superior_gs(pdf_path, archivo)
+        lecturas = extract_lecturas_pivotadas_gs(pdf_path)
+        cuadro["consumo_activo_kwh"] = lecturas.get("activa_total") or cuadro.get("consumo_activo_kwh", "")
+        cuadro["consumo_reactivo_kvarh"] = lecturas.get("reactiva_total") or "0"
+    else:
+        cuadro = extract_cuadro_superior(pdf_path, archivo)
+        lecturas = extract_lecturas_pivotadas(pdf_path)
+
+    return {**cuadro, **lecturas, "tipo_factura": tipo_factura}
  
  
 # =========================
@@ -1145,6 +1316,29 @@ def _safe_path_fragment(value: str) -> str:
     raw = str(value or "").strip()
     cleaned = re.sub(r'[\\/:*?"<>|]+', "_", raw)
     return cleaned or "sin_nombre"
+
+
+def _renombrar_factura(pdf_path: str, cuenta_actual, datos: dict, n: int) -> str:
+    """Renombra 'factura_NNN.pdf' a '{cuenta} {GS|TH}_{nro_factura}.pdf'.
+
+    Si no se pudo parsear nro_factura, o el nombre resultante ya existe
+    (colision), cae al correlativo n para garantizar que nunca se pise
+    un archivo existente.
+    """
+    tipo_factura = datos.get("tipo_factura") or "TH"
+    ident = _safe_path_fragment((datos.get("nro_factura") or "").replace(" ", "")) or f"{n:03d}"
+    out_dir = os.path.dirname(pdf_path)
+    nuevo_nombre = f"{_safe_path_fragment(str(cuenta_actual))} {tipo_factura}_{ident}.pdf"
+    nuevo_path = os.path.join(out_dir, nuevo_nombre)
+
+    if os.path.exists(nuevo_path) and os.path.abspath(nuevo_path) != os.path.abspath(pdf_path):
+        nuevo_path = os.path.join(out_dir, f"{nuevo_nombre[:-4]}_{n:03d}.pdf")
+
+    try:
+        os.replace(pdf_path, nuevo_path)
+        return nuevo_path
+    except OSError:
+        return pdf_path
  
  
 def procesar_subcuenta_historial(context, page, frame, cuenta_actual, output_dir, log) -> list[dict]:
@@ -1232,6 +1426,8 @@ def procesar_subcuenta_historial(context, page, frame, cuenta_actual, output_dir
                 datos = parse_factura_historial(pdf_path)
                 datos["nro_cuenta"] = datos.get("nro_cuenta") or cuenta_actual
                 datos["npags_pdf"] = npags
+                pdf_path = _renombrar_factura(pdf_path, cuenta_actual, datos, n)
+                datos["archivo"] = os.path.basename(pdf_path)
                 validas.append(datos)
                 filas_excel.append(datos)
                 log(f"    [{cuenta_actual}] {len(validas)}/{MAX_FACTURAS_VALIDAS} validas ({npags} pag(s)).")
@@ -1285,6 +1481,7 @@ def guardar_excel_consolidado(filas: list[dict], cuenta: str, output_dir: str, l
 
     COLS_NO_NUMERICAS = COLS_TEXTO | {
         "archivo",
+        "tipo_factura",
         "fecha_emision",
         "prox_vencimiento",
         "tarifa_aplicada",
@@ -1305,10 +1502,10 @@ def guardar_excel_consolidado(filas: list[dict], cuenta: str, output_dir: str, l
         df[col] = df[col].apply(_to_excel_number)
  
     cols_fijas = [
-        "archivo", "nro_cuenta", "nro_factura", "fecha_emision", "prox_vencimiento",
+        "archivo", "tipo_factura", "nro_cuenta", "nro_factura", "fecha_emision", "prox_vencimiento",
         "acuerdo_servicio", "nro_medidor", "tarifa_aplicada",
         "nombre_cliente", "direccion_cliente", "localidad_cliente", "departamento_cliente",
-        "potencia_contratada_punta_llano_kw", "potencia_contratada_valle_kw",
+        "potencia_contratada_punta_llano_kw", "potencia_contratada_valle_kw", "potencia_contratada_kw",
         "consumo_activo_kwh", "consumo_reactivo_kvarh",
         "tension", "fases", "direccion_servicio", "periodo_consumo", "zona_electrica",
         "total_detalle_facturacion",
@@ -1531,8 +1728,29 @@ def run_historial(
 # =========================
 # MAIN — consola
 # =========================
+def _debug_parsear_pdfs(paths: list[str]):
+    """Corre parse_factura_historial sobre PDFs locales e imprime el resultado.
+
+    Util para validar cambios de parsing (GS/TH) sin correr el scraping real.
+    Uso: python historial_facturas_ute.py debug "archivo1.pdf" "archivo2.pdf"
+    """
+    for path in paths:
+        print("=" * 70)
+        print(path)
+        if not os.path.exists(path):
+            print("  [ERROR] archivo no encontrado")
+            continue
+        datos = parse_factura_historial(path)
+        for k, v in datos.items():
+            print(f"  {k}: {v!r}")
+
+
 if __name__ == "__main__":
-    ute_user = input("Usuario UTE: ").strip()
-    ute_pass = input("Contrasena UTE: ").strip()
-    output_dir = os.path.join(os.getcwd(), ute_user)
-    run_historial(ute_user, ute_pass, cuentas_seleccionadas=[], output_dir=output_dir)
+    import sys as _sys
+    if len(_sys.argv) > 1 and _sys.argv[1] == "debug":
+        _debug_parsear_pdfs(_sys.argv[2:])
+    else:
+        ute_user = input("Usuario UTE: ").strip()
+        ute_pass = input("Contrasena UTE: ").strip()
+        output_dir = os.path.join(os.getcwd(), ute_user)
+        run_historial(ute_user, ute_pass, cuentas_seleccionadas=[], output_dir=output_dir)

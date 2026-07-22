@@ -658,7 +658,7 @@ def extract_lecturas_pivotadas(pdf_path: str) -> dict:
 # de Punta/Valle/Llano, y un solo valor de Potencia Contratada (no punta-llano/valle).
 # Se mantiene separado de extract_cuadro_superior/extract_lecturas_pivotadas (TH)
 # para no arriesgar regresiones en el flujo ya probado en produccion.
-def extract_cliente_ubicacion_gs(all_text: str) -> dict:
+def extract_cliente_ubicacion_gs(pdf_path: str, all_text: str) -> dict:
     lineas = [_norm_spaces(l) for l in all_text.splitlines() if _norm_spaces(l)]
     nombre_cliente = lineas[0] if lineas else ""
 
@@ -672,14 +672,47 @@ def extract_cliente_ubicacion_gs(all_text: str) -> dict:
     # del R.U.T. (formato: <direccion>\n<10 digitos>\n<localidad>). Se prioriza
     # sobre la direccion de facturacion porque el caso de uso central de la app
     # es un cliente con N subcuentas en direcciones fisicas distintas.
+    #
+    # Se extrae por palabras/coordenadas (columna izquierda, x0 < 260) en vez
+    # de texto plano porque pdfplumber.extract_text() fusiona en una misma
+    # linea palabras de la columna izquierda (bloque cliente) y de la derecha
+    # (detalle de facturacion) cuando comparten altura — esto ocurre en
+    # facturas con potencia contratada prorrateada (cambio de tarifa a mitad
+    # de periodo), donde aparece una fila extra de detalle a la misma altura
+    # que la direccion/localidad.
     direccion_cliente = ""
-    m_dir = re.search(
-        r"R\.U\.T\.:\s*\d+[\s\S]*?\n([A-Z0-9][^\n]+?)\n\d{10}\n([A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]{3,})\n",
-        all_text
-    )
-    if m_dir:
-        direccion_cliente = _norm_spaces(m_dir.group(1))
-        localidad_cliente = _norm_spaces(m_dir.group(2))
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            page = pdf.pages[0]
+            words = page.extract_words(use_text_flow=False, keep_blank_chars=False)
+        col_izq = [w for w in words if w["x0"] < 260]
+        lineas_col = _agrupar_words_en_lineas(col_izq)
+        idx_rut = next(
+            (i for i, l in enumerate(lineas_col) if re.match(r"^R\.U\.T\.", l, re.I)),
+            None
+        )
+        if idx_rut is not None:
+            posteriores = lineas_col[idx_rut + 1:]
+            # Caso mas comun: la direccion y el nro. de cuenta quedan en la
+            # misma linea agrupada porque estan a alturas casi identicas
+            # (ej. "CL ENTRE RIOS 1098 0591771164").
+            m_embed = re.search(r"^(.*?)\s*\b(\d{10})\b\s*$", posteriores[0]) if posteriores else None
+            if m_embed:
+                direccion_cliente = _norm_spaces(m_embed.group(1))
+                if len(posteriores) > 1:
+                    localidad_cliente = _norm_spaces(posteriores[1])
+            else:
+                # Fallback: direccion, nro. de cuenta y localidad en lineas separadas.
+                idx_cuenta = next(
+                    (i for i, l in enumerate(posteriores) if re.fullmatch(r"\d{10}", l)),
+                    None
+                )
+                if idx_cuenta:
+                    direccion_cliente = _norm_spaces(posteriores[idx_cuenta - 1])
+                    if idx_cuenta + 1 < len(posteriores):
+                        localidad_cliente = _norm_spaces(posteriores[idx_cuenta + 1])
+    except Exception:
+        pass
 
     if not departamento_cliente and localidad_cliente.upper() == "MONTEVIDEO":
         departamento_cliente = "MONTEVIDEO"
@@ -694,7 +727,7 @@ def extract_cliente_ubicacion_gs(all_text: str) -> dict:
 
 def extract_cuadro_superior_gs(pdf_path: str, archivo: str) -> dict:
     all_text = _read_pdf_text(pdf_path)
-    cliente_ubicacion = extract_cliente_ubicacion_gs(all_text)
+    cliente_ubicacion = extract_cliente_ubicacion_gs(pdf_path, all_text)
 
     nro_cuenta = _find_first(r"\b(\d{10})\b", all_text)
     nro_medidor = _find_first(r"MEDIDOR\s+Nro\.?\s*(\d+)", all_text)
@@ -719,8 +752,11 @@ def extract_cuadro_superior_gs(pdf_path: str, archivo: str) -> dict:
         tarifa = _norm_spaces(m_per_tar.group(3))
 
     # Potencia Contratada: un solo valor (GS no distingue punta-llano/valle).
+    # Cuando la potencia se factura prorrateada (cambio de tarifa a mitad de
+    # periodo), la linea siguiente al encabezado arranca con "R.U.T.: <digitos>"
+    # antes del valor en kW, asi que no se puede exigir ausencia de digitos.
     potencia_contratada_kw = ""
-    m_pot = re.search(r"CARGO\s+POTENCIA\s+CONTRATADA\s*\n[^\n\d]*([\d\.,]+)\s*kW", all_text, re.I)
+    m_pot = re.search(r"CARGO\s+POTENCIA\s+CONTRATADA[\s\S]{0,120}?([\d\.,]+)\s*kW", all_text, re.I)
     if m_pot:
         potencia_contratada_kw = _norm_money(m_pot.group(1))
 
@@ -773,7 +809,7 @@ def extract_lecturas_pivotadas_gs(pdf_path: str) -> dict:
         rf"(?P<ant>{NUM_UY})\s+"
         rf"(?P<act>{NUM_UY})\s+"
         rf"(?P<total>{NUM_UY})\s+"
-        rf"(?P<tlec>[A-Za-z]+)\b",
+        rf"(?P<tlec>[A-Za-zÀ-ÿ]+)\b",
         re.I | re.M
     )
 
@@ -1326,7 +1362,8 @@ def _renombrar_factura(pdf_path: str, cuenta_actual, datos: dict, n: int) -> str
     un archivo existente.
     """
     tipo_factura = datos.get("tipo_factura") or "TH"
-    ident = _safe_path_fragment((datos.get("nro_factura") or "").replace(" ", "")) or f"{n:03d}"
+    nro_factura_raw = (datos.get("nro_factura") or "").replace(" ", "")
+    ident = _safe_path_fragment(nro_factura_raw) if nro_factura_raw else f"{n:03d}"
     out_dir = os.path.dirname(pdf_path)
     nuevo_nombre = f"{_safe_path_fragment(str(cuenta_actual))} {tipo_factura}_{ident}.pdf"
     nuevo_path = os.path.join(out_dir, nuevo_nombre)
@@ -1424,15 +1461,26 @@ def procesar_subcuenta_historial(context, page, frame, cuenta_actual, output_dir
 
             try:
                 datos = parse_factura_historial(pdf_path)
-                datos["nro_cuenta"] = datos.get("nro_cuenta") or cuenta_actual
-                datos["npags_pdf"] = npags
-                pdf_path = _renombrar_factura(pdf_path, cuenta_actual, datos, n)
-                datos["archivo"] = os.path.basename(pdf_path)
+                parse_ok = True
+            except Exception as e:
+                log(f"    [{cuenta_actual}] Error parseando ({npags} pag(s)): {e}")
+                datos = {"tipo_factura": detectar_tipo_factura(pdf_path)}
+                parse_ok = False
+
+            # El renombrado no depende de que el parseo haya sido exitoso: aun
+            # si parse_factura_historial fallo, se dispone del tipo (TH/GS) y
+            # el archivo no debe quedar con el nombre temporal "factura_NNN.pdf".
+            datos["nro_cuenta"] = datos.get("nro_cuenta") or cuenta_actual
+            datos["npags_pdf"] = npags
+            pdf_path = _renombrar_factura(pdf_path, cuenta_actual, datos, n)
+            datos["archivo"] = os.path.basename(pdf_path)
+
+            if parse_ok:
                 validas.append(datos)
                 filas_excel.append(datos)
                 log(f"    [{cuenta_actual}] {len(validas)}/{MAX_FACTURAS_VALIDAS} validas ({npags} pag(s)).")
-            except Exception as e:
-                log(f"    [{cuenta_actual}] Error parseando ({npags} pag(s)): {e}")
+            else:
+                descartadas += 1
 
         if len(validas) >= MAX_FACTURAS_VALIDAS:
             break
@@ -1513,10 +1561,17 @@ def guardar_excel_consolidado(filas: list[dict], cuenta: str, output_dir: str, l
     cols_lecturas = sorted(c for c in df.columns if c not in cols_fijas)
     df = df[[c for c in cols_fijas if c in df.columns] + cols_lecturas]
  
-    cuenta_nombre = _safe_path_fragment(str(cuenta))
+    # Sufijo TH/GS segun el tipo de factura predominante del suministro (2
+    # hojas o 1 hoja). Todas las facturas de una misma cuenta deberian ser del
+    # mismo tipo; se usa el mas frecuente por si alguna quedo mal detectada.
+    tipos_factura = [str(f.get("tipo_factura") or "").strip().upper() for f in filas]
+    tipos_factura = [t for t in tipos_factura if t in ("TH", "GS")]
+    tipo_factura_cuenta = max(set(tipos_factura), key=tipos_factura.count) if tipos_factura else "TH"
+
+    cuenta_nombre = f"{_safe_path_fragment(str(cuenta))} {tipo_factura_cuenta}"
     excel_out = os.path.join(output_dir, f"{cuenta_nombre}.xlsx")
     os.makedirs(os.path.dirname(excel_out), exist_ok=True)
- 
+
     # Si ya existe y está bloqueado, eliminarlo antes de escribir
     if os.path.exists(excel_out):
         try:

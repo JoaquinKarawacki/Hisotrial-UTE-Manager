@@ -653,19 +653,87 @@ def extract_lecturas_pivotadas(pdf_path: str) -> dict:
 # =========================
 # Parsing PDF — factura GS (una hoja)
 # =========================
-# Layout distinto al de TH: una sola pagina, sin etiquetas "Tarifa Aplicada" /
-# "Direccion del Servicio" / "Tipo de Zona Electrica", tarifa por escalones en vez
-# de Punta/Valle/Llano, y un solo valor de Potencia Contratada (no punta-llano/valle).
+# Layout distinto al de TH: una sola pagina en vez de dos, tarifa por escalones
+# en vez de Punta/Valle/Llano, y un solo valor de Potencia Contratada (no
+# punta-llano/valle). Las etiquetas "Tarifa Aplicada" / "Direccion del Servicio"
+# / "Tipo de Zona Electrica" SI existen, solo que comprimidas de a dos boxes por
+# fila (ej. "Direccion del Servicio" y "Acuerdo de Servicio" en la misma fila) —
+# eso hace que pdfplumber.extract_text() a veces mezcle en una misma linea el
+# texto de la columna izquierda y de la derecha cuando comparten altura, por lo
+# que la extraccion de estos campos no puede asumir adyacencia estricta entre
+# etiqueta y valor (ver acuerdo_servicio/periodo_consumo/tarifa_aplicada abajo).
 # Se mantiene separado de extract_cuadro_superior/extract_lecturas_pivotadas (TH)
 # para no arriesgar regresiones en el flujo ya probado en produccion.
+#
+# IMPORTANTE (confirmado con texto crudo real de facturas GS de produccion):
+# en varias facturas GS, las etiquetas "Tarifa Aplicada" / "Acuerdo de
+# Servicio" / "Direccion del Servicio" / "Vencimiento" NO existen como texto
+# extraible (se renderizan como graficos/pills sin texto embebido) — solo el
+# valor queda en el texto, sin ninguna etiqueta cerca. Por eso varias
+# extracciones de esta funcion y de extract_cuadro_superior_gs usan la
+# POSICION relativa de los valores (linea siguiente a tal otro dato) en vez
+# de anclarse a una etiqueta, con fallback a un anclaje por etiqueta cuando
+# si esta presente en otras variantes de plantilla.
+DEPARTAMENTOS_UY = {
+    "MONTEVIDEO", "CANELONES", "MALDONADO", "COLONIA", "SAN JOSE", "SORIANO",
+    "RIO NEGRO", "PAYSANDU", "SALTO", "ARTIGAS", "RIVERA", "TACUAREMBO",
+    "DURAZNO", "FLORIDA", "FLORES", "LAVALLEJA", "TREINTA Y TRES", "ROCHA",
+    "CERRO LARGO",
+}
+
+# Fallback para cuando la factura no imprime el departamento como linea
+# propia (o esa linea no matchea DEPARTAMENTOS_UY): mapeo estatico de
+# localidad -> departamento. Geografia de Uruguay, no cambia con el tiempo.
+# Alcance inicial: capitales departamentales + localidades comunes; si
+# aparece una localidad no mapeada, el campo queda vacio como antes (sin
+# regresion), y se puede agregar la entrada cuando se detecte.
+DEPARTAMENTOS_POR_LOCALIDAD = {
+    "MONTEVIDEO": "MONTEVIDEO",
+    "CANELONES": "CANELONES", "PANDO": "CANELONES", "LAS PIEDRAS": "CANELONES",
+    "SAN RAMON": "CANELONES", "SANTA LUCIA": "CANELONES",
+    "MALDONADO": "MALDONADO", "PUNTA DEL ESTE": "MALDONADO", "SAN CARLOS": "MALDONADO",
+    "COLONIA": "COLONIA", "CARMELO": "COLONIA", "NUEVA HELVECIA": "COLONIA", "JUAN LACAZE": "COLONIA",
+    "SAN JOSE": "SAN JOSE", "LIBERTAD": "SAN JOSE",
+    "MERCEDES": "SORIANO", "DOLORES": "SORIANO",
+    "FRAY BENTOS": "RIO NEGRO", "YOUNG": "RIO NEGRO",
+    "PAYSANDU": "PAYSANDU",
+    "SALTO": "SALTO",
+    "ARTIGAS": "ARTIGAS", "BELLA UNION": "ARTIGAS",
+    "RIVERA": "RIVERA", "TRANQUERAS": "RIVERA",
+    "TACUAREMBO": "TACUAREMBO",
+    "DURAZNO": "DURAZNO",
+    "FLORIDA": "FLORIDA", "SARANDI GRANDE": "FLORIDA",
+    "TRINIDAD": "FLORES",
+    "MINAS": "LAVALLEJA",
+    "TREINTA Y TRES": "TREINTA Y TRES",
+    "ROCHA": "ROCHA", "CHUY": "ROCHA", "LA PALOMA": "ROCHA",
+    "MELO": "CERRO LARGO",
+}
+
+
 def extract_cliente_ubicacion_gs(pdf_path: str, all_text: str) -> dict:
     lineas = [_norm_spaces(l) for l in all_text.splitlines() if _norm_spaces(l)]
     nombre_cliente = lineas[0] if lineas else ""
 
     localidad_cliente = ""
     departamento_cliente = ""
+
+    # El departamento (cuando la factura lo imprime) aparece como linea
+    # propia inmediatamente despues de "LOCALIDAD - CP nnnnn-nnnnn"; se
+    # valida contra DEPARTAMENTOS_UY para no capturar por error otra linea
+    # (ej. en facturas donde esa linea sea una fecha u otro dato).
+    m_loc_depto = re.search(
+        r"\n([A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]{3,})\s*-\s*CP\s*[\d-]+[^\n]*\n([A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]{3,})\n",
+        all_text
+    )
+    if m_loc_depto:
+        localidad_cliente = _norm_spaces(m_loc_depto.group(1))
+        posible_depto = _norm_spaces(m_loc_depto.group(2)).upper()
+        if posible_depto in DEPARTAMENTOS_UY:
+            departamento_cliente = posible_depto
+
     m_loc = re.search(r"\n([A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]{3,})\s*-\s*CP\s*[\d-]+", all_text)
-    if m_loc:
+    if not localidad_cliente and m_loc:
         localidad_cliente = _norm_spaces(m_loc.group(1))
 
     # Direccion del suministro: segundo bloque nombre+direccion, ubicado despues
@@ -716,6 +784,8 @@ def extract_cliente_ubicacion_gs(pdf_path: str, all_text: str) -> dict:
 
     if not departamento_cliente and localidad_cliente.upper() == "MONTEVIDEO":
         departamento_cliente = "MONTEVIDEO"
+    if not departamento_cliente:
+        departamento_cliente = DEPARTAMENTOS_POR_LOCALIDAD.get(localidad_cliente.upper(), "")
 
     return {
         "nombre_cliente": nombre_cliente,
@@ -730,26 +800,89 @@ def extract_cuadro_superior_gs(pdf_path: str, archivo: str) -> dict:
     cliente_ubicacion = extract_cliente_ubicacion_gs(pdf_path, all_text)
 
     nro_cuenta = _find_first(r"\b(\d{10})\b", all_text)
-    nro_medidor = _find_first(r"MEDIDOR\s+Nro\.?\s*(\d+)", all_text)
 
+    # Nro. Medidor: tolerar que no haya un espacio real entre "MEDIDOR" y
+    # "Nro." en el texto extraido, y si el patron principal no matchea, caer
+    # a la tabla "Informacion de Medidores" (mismo numero sin ceros a la
+    # izquierda, ej. "Med 812505240" para "MEDIDOR Nro.00812505240").
+    nro_medidor = _find_first(r"MEDIDOR[\s\S]{0,20}?(\d{6,})", all_text)
+    if not nro_medidor:
+        nro_medidor = _find_first(r"\bMed\.?\s+(\d{5,})\b", all_text)
+
+    # Acuerdo de Servicio: en algunas plantillas la etiqueta "Acuerdo de
+    # Servicio" existe como texto (misma fila que "Direccion del Servicio",
+    # dos boxes por fila, por lo que el valor puede no quedar pegado a la
+    # etiqueta). En otras plantillas la etiqueta NO existe como texto en
+    # absoluto (confirmado con texto crudo real) y el valor aparece como
+    # linea propia, sin ninguna etiqueta, inmediatamente despues de la
+    # direccion del servicio (2do bloque direccion, ver
+    # extract_cliente_ubicacion_gs) y antes de la localidad del servicio.
+    acuerdo = _find_first(r"Acuerdo\s+de\s+[Ss]ervicio[\s\S]{0,150}?\b(\d{7,12})\b", all_text)
+    if not acuerdo and cliente_ubicacion["direccion_cliente"]:
+        idx_dir = all_text.rfind(cliente_ubicacion["direccion_cliente"])
+        if idx_dir != -1:
+            ventana = all_text[idx_dir: idx_dir + 400]
+            m_acuerdo = re.search(r"^\s*(\d{7,12})\s*$", ventana, re.M)
+            if m_acuerdo:
+                acuerdo = m_acuerdo.group(1)
+
+    # Nro. Factura / Fecha de Emision: el valor de "Proxima Vencimiento" de
+    # esta misma fila puede venir vacio (ver prox_venc mas abajo), asi que no
+    # se puede exigir una segunda fecha para no perder los tres campos juntos.
     nro_factura = fecha_emision = prox_venc = ""
-    ml = re.search(r"\b([A-Z])\s*(\d{6,10})\s+" + DATE_PAT + r"\s+" + DATE_PAT + r"\b", all_text)
+    ml = re.search(r"\b([A-Z])\s*(\d{6,10})\s+" + DATE_PAT + r"\b", all_text)
     if ml:
         nro_factura = f"{ml.group(1)} {ml.group(2)}"
         fecha_emision = ml.group(3)
-        prox_venc = ml.group(4)
 
-    # Periodo de Consumo y Tarifa aparecen pegados en la misma linea, sin
-    # etiqueta "Tarifa Aplicada" (ej: "22/05/2026 a 22/06/2026 General Simple.").
-    periodo = ""
-    tarifa = ""
-    m_per_tar = re.search(
-        DATE_PAT + r"\s*a\s*" + DATE_PAT + r"\s+([^\n]+?)\.\s*\n",
+    # Proximo Vencimiento: se muestra en una placa separada (sin etiqueta de
+    # texto "Vencimiento" extraible), como linea propia inmediatamente
+    # despues de "LOCALIDAD - CP nnnnn-nnnnn" y, si existe, del departamento.
+    m_venc = re.search(
+        r"-\s*CP\s*[\d-]+[^\n]*\n(?:[A-Z\xc1\xc9\xcd\xd3\xda\xd1 ]+\n)?" + DATE_PAT,
         all_text
     )
-    if m_per_tar:
-        periodo = f"{m_per_tar.group(1)} a {m_per_tar.group(2)}"
-        tarifa = _norm_spaces(m_per_tar.group(3))
+    if m_venc:
+        prox_venc = m_venc.group(1)
+
+    # Periodo de Consumo: anclado a su propia etiqueta ("Periodo de Consumo
+    # Electrico"), independiente de la Tarifa Aplicada — antes ambos se
+    # extraian con un solo regex que asumia que quedaban pegados en la misma
+    # linea (misma fila de dos boxes que Direccion/Acuerdo de Servicio), y si
+    # no matcheaba se perdian los dos valores a la vez.
+    periodo = ""
+    m_per = re.search(
+        r"Per[i\xed]odo\s+de\s+[Cc]onsumo(?:\s+[Ee]l[e\xe9]ctrico)?[\s\S]{0,60}?"
+        + DATE_PAT + r"\s*a\s*" + DATE_PAT,
+        all_text, re.I
+    )
+    if m_per:
+        periodo = f"{m_per.group(1)} a {m_per.group(2)}"
+    if not periodo:
+        m_per2 = re.search(DATE_PAT + r"\s*a\s*" + DATE_PAT, all_text)
+        if m_per2:
+            periodo = f"{m_per2.group(1)} a {m_per2.group(2)}"
+
+    # Tarifa Aplicada: primero se intenta anclada a su etiqueta (tolerando que
+    # el valor venga pegado al rango de fechas del periodo, ej. "Tarifa
+    # Aplicada\n18/06/2026 a 18/07/2026 General Simple."); si no matchea, se
+    # cae al regex combinado original.
+    tarifa = ""
+    m_tar = re.search(
+        r"Tarifa\s+Aplicada[\s\S]{0,60}?\n\s*(?:" + DATE_PAT + r"\s*a\s*" + DATE_PAT + r"\s+)?(?P<tarifa>[^\n]+?)\.?\s*\n",
+        all_text, re.I
+    )
+    if m_tar:
+        tarifa = _norm_spaces(m_tar.group("tarifa"))
+    if not tarifa:
+        # Punto final opcional: en plantillas sin etiqueta "Tarifa Aplicada"
+        # el valor viene sin punto de cierre (ej. "... Residencial Simple\n").
+        m_per_tar = re.search(
+            DATE_PAT + r"\s*a\s*" + DATE_PAT + r"\s+([^\n]+?)\.?\s*\n",
+            all_text
+        )
+        if m_per_tar:
+            tarifa = _norm_spaces(m_per_tar.group(3))
 
     # Potencia Contratada: un solo valor (GS no distingue punta-llano/valle).
     # Cuando la potencia se factura prorrateada (cambio de tarifa a mitad de
@@ -773,13 +906,26 @@ def extract_cuadro_superior_gs(pdf_path: str, archivo: str) -> dict:
     if m_tot:
         total_detalle_facturacion = _norm_money(m_tot.group(1))
 
+    # Si algun campo "riesgoso" (mezclado de columnas, o extraido por
+    # posicion en vez de etiqueta) sigue vacio, volcar el texto crudo para
+    # poder ajustar el regex con datos reales sin depender de otra captura
+    # de pantalla ni de otra corrida.
+    if not (periodo and nro_medidor and acuerdo and nro_factura and tarifa and prox_venc):
+        try:
+            guardar_debug(
+                os.path.join(os.path.dirname(pdf_path), "_debug_gs", f"{archivo}.txt"),
+                all_text,
+            )
+        except Exception:
+            pass
+
     return {
         "archivo":                            archivo,
         "nro_cuenta":                         nro_cuenta,
         "nro_factura":                        nro_factura,
         "fecha_emision":                      fecha_emision,
         "prox_vencimiento":                   prox_venc,
-        "acuerdo_servicio":                   "",
+        "acuerdo_servicio":                   acuerdo,
         "nro_medidor":                        nro_medidor,
         "tarifa_aplicada":                    tarifa,
         "potencia_contratada_kw":             potencia_contratada_kw,
@@ -813,16 +959,23 @@ def extract_lecturas_pivotadas_gs(pdf_path: str) -> dict:
         re.I | re.M
     )
 
+    # Se normaliza el tipo detectado a una clave base fija ("activa" /
+    # "reactiva") independientemente de la variante de texto que matcheo
+    # (ej. "Activa Saliente" en medidores con generacion/exportacion), para
+    # que activa_total/reactiva_total (y sus columnas hermanas) sean siempre
+    # las mismas claves en el Excel consolidado en vez de variar segun la
+    # etiqueta literal de cada factura puntual.
     rows = []
     seen = set()
     for m in row_pat.finditer(all_text):
-        tipo = _norm_spaces(m.group("tipo"))
-        key = (tipo.lower(), m.group("ant"), m.group("act"))
+        tipo_raw = _norm_spaces(m.group("tipo"))
+        col_base = "activa" if tipo_raw.lower().startswith("activa") else "reactiva"
+        key = (col_base, m.group("ant"), m.group("act"))
         if key in seen:
             continue
         seen.add(key)
         rows.append({
-            "tipo":     tipo,
+            "col_base": col_base,
             "lect_ant": _norm_money(m.group("ant")),
             "lect_act": _norm_money(m.group("act")),
             "factor":   "1",
@@ -830,10 +983,19 @@ def extract_lecturas_pivotadas_gs(pdf_path: str) -> dict:
             "tipo_lec": _norm_spaces(m.group("tlec")),
         })
 
+    # Siempre presentes, aunque esta factura puntual no reporte ese tipo de
+    # lectura (evita columnas activa_total/reactiva_total inconsistentes
+    # entre facturas del mismo consolidado).
     result = {}
+    for base in ("activa", "reactiva"):
+        result[f"{base}_lect_ant"] = ""
+        result[f"{base}_lect_act"] = ""
+        result[f"{base}_factor"]   = ""
+        result[f"{base}_total"]    = ""
+        result[f"{base}_tipo_lec"] = ""
+
     for r in rows:
-        col_base = re.sub(r"\s+", "_", r["tipo"].lower())
-        col_base = re.sub(r"[^a-z0-9_]", "", col_base)
+        col_base = r["col_base"]
         result[f"{col_base}_lect_ant"] = r["lect_ant"]
         result[f"{col_base}_lect_act"] = r["lect_act"]
         result[f"{col_base}_factor"]   = r["factor"]
@@ -1355,21 +1517,26 @@ def _safe_path_fragment(value: str) -> str:
 
 
 def _renombrar_factura(pdf_path: str, cuenta_actual, datos: dict, n: int) -> str:
-    """Renombra 'factura_NNN.pdf' a '{cuenta} {GS|TH}_{nro_factura}.pdf'.
+    """Renombra 'factura_NNN.pdf' a '{cuenta} {GS|TH} {NNN}_{nro_factura}.pdf'.
 
-    Si no se pudo parsear nro_factura, o el nombre resultante ya existe
-    (colision), cae al correlativo n para garantizar que nunca se pise
-    un archivo existente.
+    El correlativo n (orden de descarga, que respeta el orden del historial
+    de UTE: la mas reciente primero) siempre va en el nombre para que al
+    ordenar la carpeta alfabeticamente la 001 sea la factura mas reciente y
+    la ultima (024) la mas vieja, igual que antes de nombrar los PDF segun
+    el nro_factura. Si no se pudo parsear nro_factura, se omite ese sufijo.
     """
     tipo_factura = datos.get("tipo_factura") or "TH"
     nro_factura_raw = (datos.get("nro_factura") or "").replace(" ", "")
-    ident = _safe_path_fragment(nro_factura_raw) if nro_factura_raw else f"{n:03d}"
+    ident = _safe_path_fragment(nro_factura_raw) if nro_factura_raw else ""
     out_dir = os.path.dirname(pdf_path)
-    nuevo_nombre = f"{_safe_path_fragment(str(cuenta_actual))} {tipo_factura}_{ident}.pdf"
+    base = f"{_safe_path_fragment(str(cuenta_actual))} {tipo_factura} {n:03d}"
+    nuevo_nombre = f"{base}_{ident}.pdf" if ident else f"{base}.pdf"
     nuevo_path = os.path.join(out_dir, nuevo_nombre)
 
-    if os.path.exists(nuevo_path) and os.path.abspath(nuevo_path) != os.path.abspath(pdf_path):
-        nuevo_path = os.path.join(out_dir, f"{nuevo_nombre[:-4]}_{n:03d}.pdf")
+    contador = 1
+    while os.path.exists(nuevo_path) and os.path.abspath(nuevo_path) != os.path.abspath(pdf_path):
+        nuevo_path = os.path.join(out_dir, f"{nuevo_nombre[:-4]}_dup{contador}.pdf")
+        contador += 1
 
     try:
         os.replace(pdf_path, nuevo_path)

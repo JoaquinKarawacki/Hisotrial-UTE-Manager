@@ -9,13 +9,37 @@ El archivo .db se guarda en el mismo directorio que este script.
 """
 
 import os
+import shutil
 import sqlite3
 import base64
 from datetime import datetime
 from typing import Optional, List
 
-# Ruta del archivo de base de datos
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "seg_historial.db")
+# ── Ubicacion de la base de datos ─────────────────────────────────────────────
+# IMPORTANTE: la DB vive FUERA de la carpeta del programa, en la carpeta de
+# documentos del usuario. Asi, al actualizar/reinstalar el programa (que reemplaza
+# su carpeta), las cuentas cargadas NO se pierden. Para respaldar, basta copiar
+# este archivo antes de reinstalar.
+APP_DATA_DIR = os.path.join(os.path.expanduser("~"), "Documents", "SEG", "HistorialManager")
+DB_PATH = os.path.join(APP_DATA_DIR, "seg_historial.db")
+
+# Ubicacion "semilla" dentro del programa (data/seg_historial.db). Dos roles:
+#  1) Semilla de distribucion: viaja dentro del zip; en la 1ra ejecucion se copia a
+#     la carpeta del usuario, para que quien reciba el zip arranque con esas cuentas.
+#  2) Migracion desde versiones viejas que guardaban la DB aca.
+# En ambos casos solo se copia si el usuario aun NO tiene su DB (ver _migrar_db_legacy),
+# por eso las actualizaciones posteriores nunca pisan los datos del usuario.
+LEGACY_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "seg_historial.db")
+
+
+def get_data_dir() -> str:
+    """Carpeta donde se guarda la base de datos (para respaldos)."""
+    return APP_DATA_DIR
+
+
+def get_db_path() -> str:
+    """Ruta completa del archivo de base de datos."""
+    return DB_PATH
 
 
 # ── Ofuscación simple de contraseñas ──────────────────────────────────────────
@@ -40,10 +64,31 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _migrar_db_legacy():
+    """Migracion de una sola vez: si existe una DB vieja dentro de la carpeta del
+    programa y todavia no hay una en la carpeta del usuario, la copia. Evita perder
+    las cuentas al pasar a esta version. No borra la vieja: queda como respaldo."""
+    os.makedirs(APP_DATA_DIR, exist_ok=True)
+    if not os.path.exists(DB_PATH) and os.path.exists(LEGACY_DB_PATH):
+        shutil.copy2(LEGACY_DB_PATH, DB_PATH)
+
+
+def exportar_semilla() -> str:
+    """Copia la DB en vivo del usuario a la ubicacion semilla dentro del programa
+    (data/seg_historial.db), para que quede incluida al comprimir y enviar el zip.
+    Retorna la ruta absoluta de la semilla generada."""
+    if not os.path.exists(DB_PATH):
+        raise FileNotFoundError("Todavia no hay base de datos para exportar.")
+    os.makedirs(os.path.dirname(LEGACY_DB_PATH), exist_ok=True)
+    shutil.copy2(DB_PATH, LEGACY_DB_PATH)
+    return os.path.abspath(LEGACY_DB_PATH)
+
+
 # ── Inicialización ───────────────────────────────────────────────────────────
 
 def init_db():
     """Crea las tablas si no existen."""
+    _migrar_db_legacy()  # debe correr antes de abrir conexion (si no, crea una DB vacia)
     with get_conn() as conn:
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS clientes (
@@ -58,6 +103,7 @@ def init_db():
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 cliente_id  INTEGER NOT NULL REFERENCES clientes(id) ON DELETE CASCADE,
                 numero      TEXT    NOT NULL,
+                apodo       TEXT    DEFAULT '',
                 creada_en   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(cliente_id, numero)
             );
@@ -73,6 +119,10 @@ def init_db():
                 notas           TEXT DEFAULT ''
             );
         """)
+        # Migracion para DBs existentes: agregar 'apodo' si falta (no recrea la tabla).
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(subcuentas)").fetchall()]
+        if "apodo" not in cols:
+            conn.execute("ALTER TABLE subcuentas ADD COLUMN apodo TEXT DEFAULT ''")
         conn.commit()
 
 
@@ -141,13 +191,13 @@ def get_subcuentas(cliente_id: int) -> list[dict]:
     """Obtiene las subcuentas configuradas de un cliente."""
     with get_conn() as conn:
         rows = conn.execute(
-            "SELECT id, cliente_id, numero FROM subcuentas WHERE cliente_id=? ORDER BY numero",
+            "SELECT id, cliente_id, numero, apodo FROM subcuentas WHERE cliente_id=? ORDER BY numero",
             (cliente_id,)
         ).fetchall()
     return [dict(r) for r in rows]
 
 
-def crear_subcuenta(cliente_id: int, numero: str) -> int:
+def crear_subcuenta(cliente_id: int, numero: str, apodo: str = "") -> int:
     """Crea una subcuenta para un cliente. Retorna el ID."""
     numero = (numero or "").strip()
     if not numero:
@@ -155,8 +205,8 @@ def crear_subcuenta(cliente_id: int, numero: str) -> int:
 
     with get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO subcuentas (cliente_id, numero) VALUES (?, ?)",
-            (cliente_id, numero)
+            "INSERT INTO subcuentas (cliente_id, numero, apodo) VALUES (?, ?, ?)",
+            (cliente_id, numero, (apodo or "").strip())
         )
         conn.commit()
         return cur.lastrowid
@@ -167,6 +217,34 @@ def eliminar_subcuenta(subcuenta_id: int):
     with get_conn() as conn:
         conn.execute("DELETE FROM subcuentas WHERE id=?", (subcuenta_id,))
         conn.commit()
+
+
+def actualizar_subcuenta(subcuenta_id: int, apodo: str):
+    """Actualiza el apodo (etiqueta) de una subcuenta."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE subcuentas SET apodo=? WHERE id=?",
+            ((apodo or "").strip(), subcuenta_id)
+        )
+        conn.commit()
+
+
+def eliminar_subcuentas(subcuenta_ids: list[int]) -> int:
+    """Borrado masivo: elimina varias subcuentas por ID en una sola transaccion.
+
+    Retorna la cantidad de filas efectivamente borradas.
+    """
+    ids = [int(i) for i in (subcuenta_ids or [])]
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))  # solo caracteres '?', los ids van parametrizados
+    with get_conn() as conn:
+        cur = conn.execute(
+            f"DELETE FROM subcuentas WHERE id IN ({placeholders})",
+            ids
+        )
+        conn.commit()
+        return cur.rowcount
 
 
 # ── DESCARGAS ─────────────────────────────────────────────────────────────────

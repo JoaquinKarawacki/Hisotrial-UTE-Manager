@@ -42,6 +42,10 @@
     .client-usuario { font-size: 10px; color: rgba(255,255,255,0.5); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
     .client-item.active .client-usuario { color: rgba(255,255,255,0.7); }
     .client-list-empty { padding: 20px; text-align: center; color: rgba(255,255,255,0.4); font-size: 12px; }
+    .sidebar-footer { padding: 12px; border-top: 1px solid rgba(255,255,255,0.08); display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+    .sidebar-btn { width: 100%; background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.85); border: 1px solid rgba(255,255,255,0.12); border-radius: 3px; padding: 8px 10px; font-size: 12px; cursor: pointer; text-align: left; }
+    .sidebar-btn:hover { background: rgba(255,255,255,0.12); }
+    .sidebar-hint { font-size: 10px; color: rgba(255,255,255,0.4); line-height: 1.4; margin-top: 2px; }
 
     .main { display: flex; flex-direction: column; overflow: hidden; }
     .topbar { background: white; border-bottom: 1px solid var(--seg-gray-mid); padding: 0 28px; height: 60px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -82,9 +86,11 @@
     .sub-toolbar { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
     .sub-toolbar .form-group { min-width: 230px; flex: 1; max-width: 360px; }
     .subcuentas-list { border: 1px solid var(--seg-gray-mid); border-radius: 3px; overflow: hidden; }
-    .sub-row { display: grid; grid-template-columns: 36px 1fr auto; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--seg-gray-mid); background: white; }
+    .sub-row { display: grid; grid-template-columns: 36px auto 1fr auto; align-items: center; gap: 10px; padding: 9px 12px; border-bottom: 1px solid var(--seg-gray-mid); background: white; }
     .sub-row:last-child { border-bottom: none; }
-    .sub-number { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.4px; }
+    .sub-number { font-family: var(--font-display); font-size: 15px; letter-spacing: 0.4px; white-space: nowrap; }
+    .sub-apodo { font-size: 13px; padding: 5px 8px; border: 1px solid var(--seg-gray-mid); border-radius: 3px; width: 100%; box-sizing: border-box; }
+    .sub-apodo::placeholder { color: var(--seg-gray); }
     .sub-empty { padding: 14px; font-size: 12px; color: var(--seg-gray); background: var(--seg-gray-light); }
     .sub-meta { margin-top: 8px; font-size: 12px; color: var(--seg-gray); }
 
@@ -135,6 +141,11 @@
       </div>
       <div class="client-list" id="clientList">
         <div class="client-list-empty">Sin clientes</div>
+      </div>
+      <div class="sidebar-footer">
+        <button class="sidebar-btn" onclick="prepararEnvio()">Preparar envío (incluir cuentas en el zip)</button>
+        <button class="sidebar-btn" onclick="abrirCarpetaDatos()">Carpeta de datos (respaldo)</button>
+        <div class="sidebar-hint">Tus cuentas se guardan fuera del programa, así no se pierden al actualizar.</div>
       </div>
     </div>
 
@@ -273,6 +284,7 @@
             <div class="sub-row">
               <input type="checkbox" ${selected.includes(sc.numero) ? 'checked' : ''} onchange="toggleSubcuenta('${escapeJs(sc.numero)}', this.checked)" />
               <div class="sub-number">${escapeHtml(sc.numero)}</div>
+              <input type="text" class="sub-apodo" value="${escapeHtml(sc.apodo || '')}" placeholder="Apodo (opcional)" onchange="guardarApodo(${sc.id}, this.value)" />
               <button class="btn btn-danger btn-sm" onclick="eliminarSubcuenta(${sc.id})">Eliminar</button>
             </div>
           `).join('');
@@ -303,6 +315,7 @@
             <button class="btn btn-primary" onclick="agregarSubcuenta()">+ Agregar varias</button>
             <button class="btn btn-outline" onclick="seleccionarTodasSubcuentas()">Sel. Todas</button>
             <button class="btn btn-outline" onclick="limpiarSeleccionSubcuentas()">Limpiar</button>
+            <button class="btn btn-danger" onclick="eliminarSubcuentasSeleccionadas()">Eliminar sel.</button>
           </div>
           <div class="subcuentas-list">${subRows}</div>
           <div class="sub-meta">Seleccionadas: <strong>${selected.length}</strong> de ${subcuentas.length}</div>
@@ -500,6 +513,56 @@
       }
     }
 
+    async function guardarApodo(subcuentaId, apodo) {
+      try {
+        const result = await window.pywebview.api.actualizar_subcuenta(subcuentaId, apodo);
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudo guardar el apodo');
+        }
+        // Reflejar el cambio en memoria para que un re-render futuro no lo pierda.
+        for (const cliente of state.clientes) {
+          const sc = (cliente.subcuentas || []).find(s => s.id === subcuentaId);
+          if (sc) { sc.apodo = apodo; break; }
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    async function eliminarSubcuentasSeleccionadas() {
+      const cliente = getClienteActual();
+      if (!cliente) return;
+
+      const selNumeros = state.selectedSubcuentas[cliente.id] || [];
+      if (selNumeros.length === 0) {
+        alert('No hay subcuentas seleccionadas. Marca las que quieras borrar (o usa "Sel. Todas").');
+        return;
+      }
+
+      // Mapear los numeros seleccionados a sus IDs de BD.
+      const seleccionadas = (cliente.subcuentas || []).filter(s => selNumeros.includes(s.numero));
+      const ids = seleccionadas.map(s => s.id);
+      const nums = seleccionadas.map(s => s.numero);
+      if (ids.length === 0) return;
+
+      const preview = nums.slice(0, 15).join(', ') + (nums.length > 15 ? ', ...' : '');
+      if (!confirm('¿Eliminar ' + ids.length + ' subcuenta(s)? Esta accion no se puede deshacer.\n\n' + preview)) {
+        return;
+      }
+
+      try {
+        const result = await window.pywebview.api.eliminar_subcuentas(ids);
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudieron eliminar las subcuentas');
+        }
+        state.selectedSubcuentas[cliente.id] = [];
+        await cargarClientes();
+        alert('Eliminadas: ' + (result.borradas != null ? result.borradas : ids.length));
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
     function toggleSubcuenta(numero, checked) {
       const cliente = getClienteActual();
       if (!cliente) return;
@@ -586,6 +649,28 @@
           <p>Selecciona un cliente en el menú lateral o crea uno nuevo para comenzar.</p>
         </div>
       `;
+    }
+
+    async function prepararEnvio() {
+      try {
+        const result = await window.pywebview.api.preparar_envio();
+        if (!result || !result.ok) {
+          throw new Error((result && result.error) || 'No se pudo preparar el envío');
+        }
+        alert('Listo. Las cuentas actuales se copiaron dentro del programa (carpeta "data").\n\n' +
+              'Ya podés comprimir la carpeta del programa y enviarla. Quien la reciba y la abra ' +
+              'por primera vez arrancará con estas cuentas.');
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
+    }
+
+    async function abrirCarpetaDatos() {
+      try {
+        await window.pywebview.api.abrir_carpeta_datos();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      }
     }
 
     function escapeHtml(value) {

@@ -84,10 +84,10 @@ class HistorialApi:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
-    def crear_subcuenta(self, cliente_id: int, numero: str) -> dict:
+    def crear_subcuenta(self, cliente_id: int, numero: str, apodo: str = "") -> dict:
         """Crea una subcuenta para un cliente."""
         try:
-            subcuenta_id = db.crear_subcuenta(cliente_id, numero)
+            subcuenta_id = db.crear_subcuenta(cliente_id, numero, apodo)
             return {"ok": True, "id": subcuenta_id}
         except Exception as e:
             return {"ok": False, "error": str(e)}
@@ -97,6 +97,22 @@ class HistorialApi:
         try:
             db.eliminar_subcuenta(subcuenta_id)
             return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def actualizar_subcuenta(self, subcuenta_id: int, apodo: str = "") -> dict:
+        """Actualiza el apodo/etiqueta de una subcuenta."""
+        try:
+            db.actualizar_subcuenta(subcuenta_id, apodo)
+            return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def eliminar_subcuentas(self, subcuenta_ids: list[int]) -> dict:
+        """Borrado masivo: elimina varias subcuentas seleccionadas por ID."""
+        try:
+            borradas = db.eliminar_subcuentas(subcuenta_ids)
+            return {"ok": True, "borradas": borradas}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
@@ -190,6 +206,23 @@ class HistorialApi:
             else:
                 os.system(f'xdg-open "{ruta}"')
             return {"ok": True}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def obtener_carpeta_datos(self) -> str:
+        """Ruta de la carpeta donde se guardan las cuentas (base de datos)."""
+        return db.get_data_dir()
+
+    def abrir_carpeta_datos(self) -> dict:
+        """Abre la carpeta de la base de datos para respaldarla antes de reinstalar."""
+        return self.abrir_carpeta(db.get_data_dir())
+
+    def preparar_envio(self) -> dict:
+        """Copia la DB actual a data/ dentro del programa, para incluirla en el zip
+        que se envia a otra PC. Quien lo reciba arrancara con estas cuentas."""
+        try:
+            ruta = db.exportar_semilla()
+            return {"ok": True, "ruta": ruta}
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
